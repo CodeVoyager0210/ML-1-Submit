@@ -18,8 +18,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
 import time
+import pickle
 from typing import Dict, Any, Optional, List, Tuple
 import json
+from datetime import datetime
+from pathlib import Path
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -66,6 +69,10 @@ class InteractiveModelApp:
         self.regularization_strength = tk.DoubleVar(value=1.0)
         self.learning_rate = tk.DoubleVar(value=0.01)
         self.max_iter = tk.IntVar(value=1000)
+
+        # 创建权重保存目录
+        self.weights_dir = Path("models/weights/interactive_train")
+        self.weights_dir.mkdir(parents=True, exist_ok=True)
 
         # 创建界面
         self.create_widgets()
@@ -153,6 +160,10 @@ class InteractiveModelApp:
         # 对比按钮
         compare_button = ttk.Button(control_frame, text="对比所有模型", command=self.compare_all_models)
         compare_button.grid(row=5, column=0, pady=(5, 0))
+
+        # 查看权重按钮
+        weights_button = ttk.Button(control_frame, text="查看模型权重", command=self.view_model_weights)
+        weights_button.grid(row=6, column=0, pady=(5, 0))
 
         # 右侧可视化区域
         viz_frame = ttk.Frame(main_frame)
@@ -365,6 +376,10 @@ class InteractiveModelApp:
             # 存储训练历史（对于手动实现的模型）
             if not use_library and hasattr(model, 'fit_history'):
                 self.training_history[result_key] = model.fit_history
+
+            # 保存手写模型权重到文件
+            if not use_library:
+                self.save_manual_model_weights(model, model_name, train_metrics, training_time)
 
             # 更新界面
             self.root.after(0, self.update_after_training, result_key)
@@ -581,6 +596,265 @@ class InteractiveModelApp:
 
         self.fig_param.tight_layout()
         self.canvas_param.draw()
+
+    def save_manual_model_weights(self, model, model_name: str, train_metrics: Dict, training_time: float):
+        """保存手写模型权重到文件"""
+        try:
+            # 生成带时间戳的文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{model_name}_manual_{timestamp}.pkl"
+            filepath = self.weights_dir / filename
+
+            # 准备保存的数据
+            model_data = {
+                'model': model,
+                'model_name': model_name,
+                'train_metrics': train_metrics,
+                'training_time': training_time,
+                'timestamp': timestamp,
+                'weights': {
+                    'coefficients': (model.coef_ if hasattr(model, 'coef_') else
+                                   model.weights if hasattr(model, 'weights') else None),
+                    'intercept': (model.intercept if hasattr(model, 'intercept') else
+                                 model.bias if hasattr(model, 'bias') else None),
+                    'feature_names': [f'feature_{i}' for i in range(len(self.X_train[0]))] if self.X_train is not None else None
+                },
+                'hyperparameters': {
+                    'alpha': self.regularization_strength.get(),
+                    'learning_rate': self.learning_rate.get(),
+                    'max_iter': self.max_iter.get()
+                }
+            }
+
+            # 保存到文件
+            with open(filepath, 'wb') as f:
+                pickle.dump(model_data, f)
+
+            self.status_var.set(f"模型权重已保存: {filepath}")
+            print(f"✅ 手写模型权重已保存到: {filepath}")
+
+        except Exception as e:
+            error_msg = f"保存模型权重失败: {str(e)}"
+            self.status_var.set(error_msg)
+            print(f"❌ {error_msg}")
+
+    def load_saved_model_weights(self, model_name: str, timestamp: str = None):
+        """加载已保存的模型权重"""
+        try:
+            if timestamp:
+                filename = f"{model_name}_manual_{timestamp}.pkl"
+            else:
+                # 查找最新的模型文件
+                pattern = f"{model_name}_manual_*.pkl"
+                files = list(self.weights_dir.glob(pattern))
+                if not files:
+                    raise FileNotFoundError(f"未找到 {model_name} 的保存文件")
+                # 按修改时间排序，选择最新的
+                files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                filename = files[0].name
+
+            filepath = self.weights_dir / filename
+
+            with open(filepath, 'rb') as f:
+                model_data = pickle.load(f)
+
+            return model_data
+
+        except Exception as e:
+            error_msg = f"加载模型权重失败: {str(e)}"
+            self.status_var.set(error_msg)
+            print(f"❌ {error_msg}")
+            return None
+
+    def list_saved_models(self):
+        """列出所有已保存的模型"""
+        try:
+            files = list(self.weights_dir.glob("*.pkl"))
+            if not files:
+                return []
+
+            model_info = []
+            for file in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True):
+                try:
+                    with open(file, 'rb') as f:
+                        model_data = pickle.load(f)
+
+                    model_info.append({
+                        'filename': file.name,
+                        'model_name': model_data['model_name'],
+                        'timestamp': model_data['timestamp'],
+                        'train_r2': model_data['train_metrics']['r2'],
+                        'training_time': model_data['training_time']
+                    })
+                except:
+                    continue
+
+            return model_info
+
+        except Exception as e:
+            print(f"❌ 列出保存模型失败: {e}")
+            return []
+
+    def view_model_weights(self):
+        """查看当前模型的权重信息"""
+        current_model_name = self.current_model_name.get()
+        use_library = bool(self.use_library.get())
+        result_key = f"{current_model_name}_{'library' if use_library else 'manual'}"
+
+        if result_key not in self.model_results:
+            messagebox.showwarning("警告", f"请先训练 {current_model_name} 模型")
+            return
+
+        model = self.model_results[result_key]['model']
+        model_info = self.model_results[result_key]
+
+        # 创建权重查看窗口
+        weights_window = tk.Toplevel(self.root)
+        weights_window.title(f"{current_model_name} 权重信息")
+        weights_window.geometry("600x500")
+
+        # 创建滚动文本框
+        text_frame = ttk.Frame(weights_window, padding="10")
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        text_widget = tk.Text(text_frame, wrap=tk.WORD, font=("Consolas", 10))
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 构建权重信息文本
+        weight_info = f"{'='*60}\n"
+        weight_info += f"模型: {current_model_name} ({'库实现' if use_library else '手动实现'})\n"
+        weight_info += f"{'='*60}\n\n"
+
+        # 基本信息
+        weight_info += f"📊 基本信息:\n"
+        weight_info += f"   训练R²: {model_info['train_metrics']['r2']:.4f}\n"
+        weight_info += f"   训练RMSE: {model_info['train_metrics']['rmse']:.4f}\n"
+        weight_info += f"   训练MAE: {model_info['train_metrics']['mae']:.4f}\n"
+        weight_info += f"   训练时间: {model_info['training_time']:.2f}秒\n\n"
+
+        # 超参数
+        weight_info += f"⚙️  超参数:\n"
+        weight_info += f"   正则化强度(alpha): {model_info['params']['alpha']}\n"
+        weight_info += f"   学习率: {model_info['params']['learning_rate']}\n"
+        weight_info += f"   最大迭代次数: {model_info['params']['max_iter']}\n\n"
+
+        if not use_library:
+            # 手写模型的权重信息
+            weight_info += f"🔧 手写实现权重详情:\n"
+
+            # 尝试多种属性名获取权重
+            weights = None
+            if hasattr(model, 'coef_') and model.coef_ is not None:
+                weights = model.coef_
+                # print(f"找到权重 coef_: {weights}")
+            elif hasattr(model, 'weights') and model.weights is not None:
+                weights = model.weights
+                # print(f"找到权重 weights: {weights}")
+
+            # 调试信息
+            # print(f"模型类型: {type(model)}")
+            # print(f"有coef_属性: {hasattr(model, 'coef_')}")
+            # print(f"有weights属性: {hasattr(model, 'weights')}")
+            # if hasattr(model, 'coef_'):
+            #     print(f"coef_值: {model.coef_}")
+            # if hasattr(model, 'weights'):
+            #     print(f"weights值: {model.weights}")
+
+            if weights is not None:
+                weight_info += f"   权重数量: {len(weights)}\n"
+                weight_info += f"   权重范围: [{weights.min():.6f}, {weights.max():.6f}]\n"
+                weight_info += f"   权重均值: {weights.mean():.6f}\n"
+                weight_info += f"   权重标准差: {weights.std():.6f}\n"
+
+                # 尝试多种属性名获取截距
+                intercept = None
+                if hasattr(model, 'intercept') and model.intercept is not None:
+                    intercept = model.intercept
+                elif hasattr(model, 'bias') and model.bias is not None:
+                    intercept = model.bias
+
+                if intercept is not None:
+                    weight_info += f"   截距: {intercept:.6f}\n"
+
+                # 显示权重分布统计
+                weight_info += f"\n   📈 权重分布:\n"
+                weight_info += f"   - 第一个四分位数(Q1): {np.percentile(weights, 25):.6f}\n"
+                weight_info += f"   - 中位数(Q2): {np.median(weights):.6f}\n"
+                weight_info += f"   - 第三个四分位数(Q3): {np.percentile(weights, 75):.6f}\n"
+
+                # 显示权重值（前10个和后10个）
+                weight_info += f"\n   📋 权重值 (显示前10个和后10个):\n"
+                if len(weights) <= 20:
+                    for i, w in enumerate(weights):
+                        weight_info += f"   w[{i:2d}]: {w:12.6f}\n"
+                else:
+                    for i in range(10):
+                        weight_info += f"   w[{i:2d}]: {weights[i]:12.6f}\n"
+                    weight_info += f"   ...\n"
+                    for i in range(len(weights)-10, len(weights)):
+                        weight_info += f"   w[{i:2d}]: {weights[i]:12.6f}\n"
+
+                # 显示零权重数量
+                zero_weights = np.sum(np.abs(weights) < 1e-10)
+                weight_info += f"\n   🎯 权重稀疏性:\n"
+                weight_info += f"   - 零权重数量: {zero_weights}/{len(weights)} ({zero_weights/len(weights)*100:.1f}%)\n"
+                weight_info += f"   - 非零权重数量: {len(weights)-zero_weights}/{len(weights)} ({(len(weights)-zero_weights)/len(weights)*100:.1f}%)\n"
+
+            else:
+                weight_info += "   ❌ 未找到权重信息\n"
+
+            # 显示训练历史（如果有）
+            if hasattr(model, 'fit_history') and model.fit_history:
+                weight_info += f"\n📈 训练历史:\n"
+                history = model.fit_history
+                if 'loss' in history and history['loss']:
+                    final_loss = history['loss'][-1]
+                    weight_info += f"   - 最终训练损失: {final_loss:.6f}\n"
+                if 'val_loss' in history and history['val_loss']:
+                    final_val_loss = history['val_loss'][-1]
+                    weight_info += f"   - 最终验证损失: {final_val_loss:.6f}\n"
+                if 'epochs' in history:
+                    weight_info += f"   - 训练轮数: {history['epochs']}\n"
+
+        else:
+            # 库实现的信息
+            weight_info += f"📦 Scikit-learn库实现信息:\n"
+            if hasattr(model, 'coef_'):
+                coef = model.coef_
+                weight_info += f"   系数数量: {len(coef)}\n"
+                weight_info += f"   系数范围: [{coef.min():.6f}, {coef.max():.6f}]\n"
+                weight_info += f"   系数均值: {coef.mean():.6f}\n"
+                weight_info += f"   系数标准差: {coef.std():.6f}\n"
+
+            if hasattr(model, 'intercept_'):
+                weight_info += f"   截距: {model.intercept_:.6f}\n"
+
+        # 文件保存信息
+        if not use_library:
+            weight_info += f"\n💾 权重保存位置:\n"
+            weight_info += f"   目录: {self.weights_dir}\n"
+            saved_models = self.list_saved_models()
+            current_timestamp = None
+            for model_info in saved_models:
+                if model_info['model_name'] == current_model_name:
+                    current_timestamp = model_info['timestamp']
+                    break
+            if current_timestamp:
+                weight_info += f"   文件: {current_model_name}_manual_{current_timestamp}.pkl\n"
+
+        weight_info += f"\n{'='*60}\n"
+
+        # 插入文本
+        text_widget.insert(tk.END, weight_info)
+        text_widget.config(state=tk.DISABLED)
+
+        # 添加关闭按钮
+        close_button = ttk.Button(weights_window, text="关闭", command=weights_window.destroy)
+        close_button.pack(pady=10)
 
 
 def main():
