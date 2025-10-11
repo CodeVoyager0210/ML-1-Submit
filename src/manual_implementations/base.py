@@ -117,10 +117,10 @@ def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     mae = np.mean(np.abs(y_true - y_pred))
     rmse = np.sqrt(mse)
 
-    # R²计算
+    # R²计算（防止除零错误）
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-    r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+    r2 = 1 - (ss_res / ss_tot) if ss_tot > 1e-10 else 0.0
 
     return {
         'mse': mse,

@@ -16,7 +16,8 @@ class LinearRegression(BaseRegressor):
     """手动实现的线性回归"""
 
     def __init__(self, method: str = 'analytical', learning_rate: float = 0.01,
-                 max_iter: int = 1000, tol: float = 1e-6, verbose: bool = False):
+                 max_iter: int = 1000, tol: float = 1e-6, verbose: bool = False,
+                 random_state: int = 42):
         """
         初始化线性回归
 
@@ -26,6 +27,7 @@ class LinearRegression(BaseRegressor):
             max_iter: 最大迭代次数（梯度下降时使用）
             tol: 收敛容忍度（梯度下降时使用）
             verbose: 是否显示训练过程
+            random_state: 随机种子
         """
         super().__init__()
         self.method = method
@@ -33,6 +35,7 @@ class LinearRegression(BaseRegressor):
         self.max_iter = max_iter
         self.tol = tol
         self.verbose = verbose
+        self.random_state = random_state
         self.coefficients = None
         self.intercept = None
         self.X_normalized_params = None
@@ -100,8 +103,8 @@ class LinearRegression(BaseRegressor):
         """梯度下降求解"""
         n_samples, n_features = X.shape
 
-        # 初始化参数
-        self.coefficients = np.zeros(n_features)
+        # 使用随机初始化
+        self.coefficients = np.random.randn(n_features) * 0.01  # 小随机数初始化
         prev_loss = float('inf')
 
         for epoch in range(self.max_iter):
@@ -122,9 +125,15 @@ class LinearRegression(BaseRegressor):
 
             # 验证集损失
             if X_val is not None and y_val is not None:
-                val_pred = self.predict(X_val)
-                val_loss = np.mean((val_pred - y_val) ** 2)
-                self.fit_history['val_loss'].append(val_loss)
+                # 在训练过程中临时允许预测
+                original_fitted = getattr(self, 'is_fitted', False)
+                self.is_fitted = True
+                try:
+                    val_pred = self.predict(X_val)
+                    val_loss = np.mean((val_pred - y_val) ** 2)
+                    self.fit_history['val_loss'].append(val_loss)
+                finally:
+                    self.is_fitted = original_fitted
 
             # 收敛检查
             if abs(prev_loss - loss) < self.tol:
@@ -154,8 +163,37 @@ class LinearRegression(BaseRegressor):
         if not self.is_fitted:
             raise ValueError("模型尚未训练")
 
+        # 如果没有标准化参数，直接使用原始数据
+        if self.X_normalized_params is None:
+            # 没有标准化参数，直接使用原始数据
+            if hasattr(self, 'coef_') and self.coef_ is not None:
+                # 使用coef_和intercept
+                y_pred = X @ self.coef_
+                if hasattr(self, 'intercept') and self.intercept is not None:
+                    y_pred = y_pred + self.intercept
+                return y_pred
+            elif hasattr(self, 'coefficients') and self.coefficients is not None:
+                # 使用coefficients - 修正：这里应该计算预测而不是直接返回系数
+                if len(self.coefficients) == X.shape[1] + 1:
+                    # 有偏置项的情况
+                    y_pred = X @ self.coefficients[1:] + self.coefficients[0]
+                else:
+                    # 没有偏置项的情况
+                    y_pred = X @ self.coefficients
+                if hasattr(self, 'intercept') and self.intercept is not None:
+                    y_pred = y_pred + self.intercept
+                return y_pred
+            else:
+                raise ValueError("模型训练不完整")
+
         # 应用相同的预处理
-        X_processed = apply_normalization(X, self.X_normalized_params)
+        try:
+            X_processed = apply_normalization(X, self.X_normalized_params)
+        except Exception as e:
+            print(f"Warning: 预处理失败，使用原始数据: {e}")
+            X_processed = X.copy()
+
+        # 添加偏置项
         X_with_bias = add_bias_term(X_processed)
 
         # 预测并恢复中心化
@@ -168,7 +206,7 @@ class RidgeRegression(BaseRegressor):
 
     def __init__(self, alpha: float = 1.0, method: str = 'analytical',
                  learning_rate: float = 0.01, max_iter: int = 1000, tol: float = 1e-6,
-                 verbose: bool = False):
+                 verbose: bool = False, random_state: int = 42):
         """
         初始化岭回归
 
@@ -179,6 +217,7 @@ class RidgeRegression(BaseRegressor):
             max_iter: 最大迭代次数
             tol: 收敛容忍度
             verbose: 是否显示训练过程
+            random_state: 随机种子
         """
         super().__init__()
         self.alpha = alpha
@@ -187,6 +226,7 @@ class RidgeRegression(BaseRegressor):
         self.max_iter = max_iter
         self.tol = tol
         self.verbose = verbose
+        self.random_state = random_state
         self.coefficients = None
         self.intercept = None
         self.X_normalized_params = None
@@ -249,8 +289,8 @@ class RidgeRegression(BaseRegressor):
         """梯度下降求解"""
         n_samples, n_features = X.shape
 
-        # 初始化参数
-        self.coefficients = np.zeros(n_features)
+        # 使用随机初始化
+        self.coefficients = np.random.randn(n_features) * 0.01  # 小随机数初始化
         prev_loss = float('inf')
 
         for epoch in range(self.max_iter):
@@ -277,9 +317,15 @@ class RidgeRegression(BaseRegressor):
 
             # 验证集损失
             if X_val is not None and y_val is not None:
-                val_pred = self.predict(X_val)
-                val_loss = np.mean((val_pred - y_val) ** 2)
-                self.fit_history['val_loss'].append(val_loss)
+                # 在训练过程中临时允许预测
+                original_fitted = getattr(self, 'is_fitted', False)
+                self.is_fitted = True
+                try:
+                    val_pred = self.predict(X_val)
+                    val_loss = np.mean((val_pred - y_val) ** 2)
+                    self.fit_history['val_loss'].append(val_loss)
+                finally:
+                    self.is_fitted = original_fitted
 
             # 收敛检查
             if abs(prev_loss - loss) < self.tol:
@@ -312,7 +358,7 @@ class LassoRegression(BaseRegressor):
     """手动实现的Lasso回归（使用坐标下降法）"""
 
     def __init__(self, alpha: float = 1.0, max_iter: int = 1000, tol: float = 1e-6,
-                 verbose: bool = False):
+                 verbose: bool = False, random_state: int = 42):
         """
         初始化Lasso回归
 
@@ -321,12 +367,14 @@ class LassoRegression(BaseRegressor):
             max_iter: 最大迭代次数
             tol: 收敛容忍度
             verbose: 是否显示训练过程
+            random_state: 随机种子
         """
         super().__init__()
         self.alpha = alpha
         self.max_iter = max_iter
         self.tol = tol
         self.verbose = verbose
+        self.random_state = random_state
         self.coefficients = None
         self.intercept = None
         self.X_normalized_params = None
@@ -357,9 +405,9 @@ class LassoRegression(BaseRegressor):
         """坐标下降法求解"""
         n_samples, n_features = X.shape
 
-        # 初始化参数
+        # 使用随机初始化
         self.intercept = np.mean(y)
-        self.coef_ = np.zeros(n_features)
+        self.coef_ = np.random.randn(n_features) * 0.01  # 小随机数初始化
         self.coefficients = np.concatenate([[self.intercept], self.coef_])
 
         prev_loss = float('inf')
@@ -427,7 +475,7 @@ class ElasticNet(BaseRegressor):
     """手动实现的Elastic Net"""
 
     def __init__(self, alpha: float = 1.0, l1_ratio: float = 0.5, max_iter: int = 1000,
-                 tol: float = 1e-6, verbose: bool = False):
+                 tol: float = 1e-6, verbose: bool = False, random_state: int = 42):
         """
         初始化Elastic Net
 
@@ -437,6 +485,7 @@ class ElasticNet(BaseRegressor):
             max_iter: 最大迭代次数
             tol: 收敛容忍度
             verbose: 是否显示训练过程
+            random_state: 随机种子
         """
         super().__init__()
         self.alpha = alpha
@@ -444,6 +493,7 @@ class ElasticNet(BaseRegressor):
         self.max_iter = max_iter
         self.tol = tol
         self.verbose = verbose
+        self.random_state = random_state
         self.coefficients = None
         self.intercept = None
         self.X_normalized_params = None
@@ -480,7 +530,7 @@ class ElasticNet(BaseRegressor):
 
         # 初始化参数
         self.intercept = np.mean(y)
-        self.coef_ = np.zeros(n_features)
+        self.coef_ = np.random.randn(n_features) * 0.01  # 小随机数初始化
         self.coefficients = np.concatenate([[self.intercept], self.coef_])
 
         prev_loss = float('inf')

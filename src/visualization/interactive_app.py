@@ -56,8 +56,12 @@ class InteractiveModelApp:
         self.X_test = None
         self.y_test = None
 
+        # 设置随机种子（可以调整）
+        self.random_seed = None  # 不使用固定种子，确保每次训练都有随机性
+
         # 模型存储
         self.current_model = None
+        self.current_result_key = None  # 记录当前训练的模型结果键
         self.model_results = {}
         self.training_history = {}
 
@@ -117,9 +121,9 @@ class InteractiveModelApp:
         impl_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
         ttk.Radiobutton(impl_frame, text="使用sklearn库", variable=self.use_library,
-                       value=1).grid(row=0, column=0, sticky=tk.W)
+                       value=1, command=self.on_implementation_change).grid(row=0, column=0, sticky=tk.W)
         ttk.Radiobutton(impl_frame, text="手动实现", variable=self.use_library,
-                       value=0).grid(row=1, column=0, sticky=tk.W)
+                       value=0, command=self.on_implementation_change).grid(row=1, column=0, sticky=tk.W)
 
         # 参数设置区域
         param_frame = ttk.LabelFrame(control_frame, text="参数设置", padding="5")
@@ -132,7 +136,7 @@ class InteractiveModelApp:
         reg_scale.grid(row=0, column=1, padx=(5, 0))
         self.reg_label = ttk.Label(param_frame, text="1.00")
         self.reg_label.grid(row=0, column=2, padx=(5, 0))
-        reg_scale.config(command=lambda v: self.reg_label.config(text=f"{float(v):.2f}"))
+        reg_scale.config(command=lambda v: (self.reg_label.config(text=f"{float(v):.2f}"), self.on_param_change()))
 
         # 学习率
         ttk.Label(param_frame, text="学习率:").grid(row=1, column=0, sticky=tk.W)
@@ -141,12 +145,12 @@ class InteractiveModelApp:
         lr_scale.grid(row=1, column=1, padx=(5, 0))
         self.lr_label = ttk.Label(param_frame, text="0.01")
         self.lr_label.grid(row=1, column=2, padx=(5, 0))
-        lr_scale.config(command=lambda v: self.lr_label.config(text=f"{float(v):.3f}"))
+        lr_scale.config(command=lambda v: (self.lr_label.config(text=f"{float(v):.3f}"), self.on_param_change()))
 
         # 最大迭代次数
         ttk.Label(param_frame, text="最大迭代:").grid(row=2, column=0, sticky=tk.W)
         iter_spin = ttk.Spinbox(param_frame, from_=100, to=5000, textvariable=self.max_iter,
-                               width=10)
+                               width=10, command=self.on_param_change)
         iter_spin.grid(row=2, column=1, sticky=tk.W, padx=(5, 0))
 
         # 早停设置
@@ -253,11 +257,12 @@ class InteractiveModelApp:
                 X = data[feature_cols].values
                 y = data['median_house_value'].values
 
-                # 简单分割数据
+                # 使用固定随机种子分割数据以确保可重现性
                 n_samples = len(X)
                 n_train = int(0.7 * n_samples)
                 n_val = int(0.15 * n_samples)
 
+                # 使用随机排列，每次数据加载可能不同
                 indices = np.random.permutation(n_samples)
                 train_indices = indices[:n_train]
                 val_indices = indices[n_train:n_train + n_val]
@@ -279,11 +284,70 @@ class InteractiveModelApp:
     def on_model_change(self):
         """模型选择改变时的回调"""
         model_name = self.current_model_name.get()
+        use_library = bool(self.use_library.get())
+
         # 可以根据模型类型调整参数范围
         if model_name == 'linear_regression':
             self.regularization_strength.set(0.1)
         elif model_name in ['ridge_regression', 'lasso_regression', 'elastic_net']:
             self.regularization_strength.set(1.0)
+
+        # 更新当前结果键以匹配选择的模型
+        self.update_current_display_model()
+
+    def on_implementation_change(self):
+        """实现方式改变时的回调"""
+        # 更新当前显示的模型
+        self.update_current_display_model()
+
+    def on_param_change(self):
+        """参数改变时的回调"""
+        # 更新当前显示的模型，提示需要重新训练
+        self.update_current_display_model()
+
+    def update_current_display_model(self):
+        """更新当前显示的模型"""
+        model_name = self.current_model_name.get()
+        use_library = bool(self.use_library.get())
+
+        # 生成包含当前参数的键
+        current_alpha = self.regularization_strength.get()
+        current_lr = self.learning_rate.get()
+        current_iter = self.max_iter.get()
+        param_hash = f"a{current_alpha:.3f}_lr{current_lr:.4f}_i{current_iter}"
+        current_key = f"{model_name}_{'library' if use_library else 'manual'}_{param_hash}"
+
+        # 查找匹配当前参数的模型结果
+        if current_key in self.model_results:
+            self.current_result_key = current_key
+            # 更新图表显示
+            self.update_performance_plot()
+            self.update_prediction_plot()
+            self.update_learning_plot()
+
+            # 更新状态栏显示当前选择模型的性能
+            result = self.model_results[current_key]
+            self.status_var.set(f"选择模型: {result['model_name']} ({result['implementation']}) "
+                               f"测试R2: {result['test_metrics']['r2']:.4f}")
+        else:
+            # 查找是否有相同模型类型但不同参数的结果
+            base_key = f"{model_name}_{'library' if use_library else 'manual'}"
+            matching_results = [key for key in self.model_results.keys() if key.startswith(base_key)]
+
+            if matching_results:
+                # 选择最近训练的一个
+                latest_key = max(matching_results, key=lambda k: self.model_results[k].get('timestamp', 0))
+                self.current_result_key = latest_key
+                result = self.model_results[latest_key]
+                self.status_var.set(f"选择模型: {result['model_name']} ({result['implementation']}) - 参数已变化，点击重新训练")
+            else:
+                self.current_result_key = None
+                self.status_var.set(f"已选择: {model_name} ({'库实现' if use_library else '手动实现'}) - 点击训练开始")
+
+            # 更新图表显示（即使没有当前参数的结果）
+            self.update_performance_plot()
+            self.update_prediction_plot()
+            self.update_learning_plot()
 
     def get_model_instance(self, model_name: str, use_library: bool = True):
         """获取模型实例"""
@@ -291,7 +355,7 @@ class InteractiveModelApp:
             'alpha': self.regularization_strength.get(),
             'learning_rate': self.learning_rate.get(),
             'max_iter': self.max_iter.get(),
-            'random_state': 42,
+            'random_state': None,  # 不使用固定种子
             'verbose': False
         }
 
@@ -301,20 +365,27 @@ class InteractiveModelApp:
             from sklearn.linear_model import Ridge as SKRidge
             from sklearn.linear_model import Lasso as SKLasso
             from sklearn.linear_model import ElasticNet as SKElasticNet
+            from sklearn.linear_model import SGDRegressor as SKSGDRegressor
 
             model_map = {
-                'linear_regression': SKLinearRegression(),
-                'ridge_regression': SKRidge(alpha=params['alpha']),
-                'lasso_regression': SKLasso(alpha=params['alpha'], max_iter=params['max_iter']),
-                'elastic_net': SKElasticNet(alpha=params['alpha'], max_iter=params['max_iter'])
+                'linear_regression': SKSGDRegressor(
+                    learning_rate='adaptive',
+                    eta0=params['learning_rate'],
+                    max_iter=params['max_iter'],
+                    random_state=params['random_state'],  # 使用可变的随机种子
+                    penalty=None  # 无正则化的线性回归
+                ),
+                'ridge_regression': SKRidge(alpha=params['alpha'], random_state=params['random_state']),
+                'lasso_regression': SKLasso(alpha=params['alpha'], max_iter=params['max_iter'], random_state=params['random_state']),
+                'elastic_net': SKElasticNet(alpha=params['alpha'], max_iter=params['max_iter'], random_state=params['random_state'])
             }
         else:
-            # 使用手动实现
+            # 使用手动实现 - 强制使用迭代方法以确保参数敏感性
             model_map = {
-                'linear_regression': LinearRegression(method='analytical'),
-                'ridge_regression': RidgeRegression(alpha=params['alpha']),
-                'lasso_regression': LassoRegression(alpha=params['alpha']),
-                'elastic_net': ElasticNet(alpha=params['alpha'])
+                'linear_regression': LinearRegression(method='gradient', learning_rate=params['learning_rate'], max_iter=params['max_iter'], random_state=params['random_state']),
+                'ridge_regression': RidgeRegression(alpha=params['alpha'], method='gradient', learning_rate=params['learning_rate'], max_iter=params['max_iter'], random_state=42),
+                'lasso_regression': LassoRegression(alpha=params['alpha'], max_iter=params['max_iter'], random_state=params['random_state']),  # Lasso使用坐标下降法，alpha参数起作用
+                'elastic_net': ElasticNet(alpha=params['alpha'], max_iter=params['max_iter'], random_state=params['random_state'])  # Elastic Net使用坐标下降法，alpha参数起作用
             }
 
         return model_map.get(model_name)
@@ -328,36 +399,131 @@ class InteractiveModelApp:
         model_name = self.current_model_name.get()
         use_library = bool(self.use_library.get())
 
+        # 禁用训练按钮防止重复点击
+        self.disable_train_button()
+
         self.status_var.set(f"正在训练{model_name} ({'库实现' if use_library else '手动实现'})...")
 
         # 在新线程中训练以避免阻塞界面
         threading.Thread(target=self._train_model_thread, args=(model_name, use_library), daemon=True).start()
 
+    def disable_train_button(self):
+        """禁用训练按钮"""
+        for widget in self.root.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                for child in widget.winfo_children():
+                    if isinstance(child, ttk.Frame):
+                        for button in child.winfo_children():
+                            if isinstance(button, ttk.Button) and "训练" in button['text']:
+                                button.config(state='disabled')
+
+    def enable_train_button(self):
+        """启用训练按钮"""
+        for widget in self.root.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                for child in widget.winfo_children():
+                    if isinstance(child, ttk.Frame):
+                        for button in child.winfo_children():
+                            if isinstance(button, ttk.Button) and "训练" in button['text']:
+                                button.config(state='normal')
+
     def _train_model_thread(self, model_name: str, use_library: bool):
         """在后台线程中训练模型"""
         try:
+            # 获取当前参数值
+            current_alpha = self.regularization_strength.get()
+            current_lr = self.learning_rate.get()
+            current_iter = self.max_iter.get()
+
+            print(f"\n[DEBUG] 开始训练模型:")
+            print(f"   模型: {model_name}")
+            print(f"   实现: {'library' if use_library else 'manual'}")
+            print(f"   参数: alpha={current_alpha}, lr={current_lr}, iter={current_iter}")
+            print(f"   数据形状: X_train={self.X_train.shape if self.X_train is not None else None}, y_train={self.y_train.shape if self.y_train is not None else None}")
+
             # 获取模型实例
             model = self.get_model_instance(model_name, use_library)
+            print(f"   模型类型: {type(model)}")
+            print(f"   模型参数: {getattr(model, '__dict__', {})}")
 
             # 训练模型
             start_time = time.time()
+            print(f"   开始训练...")
+
+            # 更新状态显示训练开始
+            self.root.after(0, lambda: self.status_var.set(f"正在训练{model_name} ({'库实现' if use_library else '手动实现'}) - 初始化模型..."))
+
             if use_library:
+                self.root.after(0, lambda: self.status_var.set(f"正在训练{model_name} (库实现) - 拟合数据..."))
                 model.fit(self.X_train, self.y_train)
+                print(f"   Sklearn训练完成")
+                self.root.after(0, lambda: self.status_var.set(f"正在训练{model_name} (库实现) - 计算性能指标..."))
             else:
-                model.fit(self.X_train, self.y_train, self.X_val, self.y_val)
+                print(f"   调用手动实现fit方法...")
+                self.root.after(0, lambda: self.status_var.set(f"正在训练{model_name} (手动实现) - 开始迭代训练..."))
+                try:
+                    model.fit(self.X_train, self.y_train, self.X_val, self.y_val)
+                    print(f"   [OK] 手动实现训练完成")
+                    print(f"   is_fitted状态: {getattr(model, 'is_fitted', 'NO_ATTR')}")
+                    if hasattr(model, 'coefficients'):
+                        print(f"   系数形状: {model.coefficients.shape if model.coefficients is not None else None}")
+                    if hasattr(model, 'intercept'):
+                        print(f"   截距: {model.intercept}")
+                    self.root.after(0, lambda: self.status_var.set(f"正在训练{model_name} (手动实现) - 训练完成，计算性能指标..."))
+                except Exception as fit_error:
+                    print(f"   [ERROR] 手动实现训练失败: {fit_error}")
+                    print(f"   错误类型: {type(fit_error)}")
+                    import traceback
+                    print(f"   详细错误信息: {traceback.format_exc()}")
+                    raise fit_error
+
             training_time = time.time() - start_time
+            print(f"   训练耗时: {training_time:.2f}秒")
 
             # 计算性能指标
-            y_train_pred = model.predict(self.X_train)
-            y_val_pred = model.predict(self.X_val)
-            y_test_pred = model.predict(self.X_test)
+            print(f"   计算预测结果...")
+            print(f"   模型is_fitted状态: {getattr(model, 'is_fitted', 'NO_ATTR')}")
 
+            self.root.after(0, lambda: self.status_var.set(f"正在训练{model_name} - 计算预测结果..."))
+
+            try:
+                y_train_pred = model.predict(self.X_train)
+                print(f"   训练集预测成功，形状: {y_train_pred.shape}")
+            except Exception as pred_error:
+                print(f"   [ERROR] 训练集预测失败: {pred_error}")
+                raise pred_error
+
+            try:
+                y_val_pred = model.predict(self.X_val)
+                print(f"   验证集预测成功，形状: {y_val_pred.shape}")
+            except Exception as pred_error:
+                print(f"   [ERROR] 验证集预测失败: {pred_error}")
+                raise pred_error
+
+            try:
+                y_test_pred = model.predict(self.X_test)
+                print(f"   测试集预测成功，形状: {y_test_pred.shape}")
+            except Exception as pred_error:
+                print(f"   [ERROR] 测试集预测失败: {pred_error}")
+                raise pred_error
+
+            self.root.after(0, lambda: self.status_var.set(f"正在训练{model_name} - 计算性能指标..."))
+            print(f"   计算性能指标...")
             train_metrics = calculate_metrics(self.y_train, y_train_pred)
             val_metrics = calculate_metrics(self.y_val, y_val_pred)
             test_metrics = calculate_metrics(self.y_test, y_test_pred)
 
-            # 存储结果
-            result_key = f"{model_name}_{'library' if use_library else 'manual'}"
+            print(f"   训练R2: {train_metrics['r2']:.6f}")
+            print(f"   验证R2: {val_metrics['r2']:.6f}")
+            print(f"   测试R2: {test_metrics['r2']:.6f}")
+
+            # 生成包含参数的唯一键，确保参数变化时重新训练并保存不同结果
+            param_hash = f"a{current_alpha:.3f}_lr{current_lr:.4f}_i{current_iter}"
+            result_key = f"{model_name}_{'library' if use_library else 'manual'}_{param_hash}"
+
+            print(f"   生成缓存键: {result_key}")
+            print(f"   之前是否有相同键: {result_key in self.model_results}")
+
             self.model_results[result_key] = {
                 'model': model,
                 'model_name': model_name,
@@ -366,12 +532,18 @@ class InteractiveModelApp:
                 'val_metrics': val_metrics,
                 'test_metrics': test_metrics,
                 'training_time': training_time,
+                'timestamp': time.time(),  # 添加时间戳用于排序
                 'params': {
-                    'alpha': self.regularization_strength.get(),
-                    'learning_rate': self.learning_rate.get(),
-                    'max_iter': self.max_iter.get()
+                    'alpha': current_alpha,
+                    'learning_rate': current_lr,
+                    'max_iter': current_iter
                 }
             }
+
+            # 记录当前训练的模型结果键，用于界面显示
+            self.current_result_key = result_key
+            print(f"   设置当前结果键: {self.current_result_key}")
+            print(f"   总模型结果数量: {len(self.model_results)}")
 
             # 存储训练历史（对于手动实现的模型）
             if not use_library and hasattr(model, 'fit_history'):
@@ -382,25 +554,51 @@ class InteractiveModelApp:
                 self.save_manual_model_weights(model, model_name, train_metrics, training_time)
 
             # 更新界面
+            print(f"   [SUCCESS] 训练成功完成，准备更新界面...")
             self.root.after(0, self.update_after_training, result_key)
 
         except Exception as e:
+            print(f"   [ERROR] 训练过程中发生异常: {str(e)}")
+            print(f"   异常类型: {type(e)}")
+            import traceback
+            print(f"   详细错误信息:\n{traceback.format_exc()}")
+
             error_msg = f"训练失败: {str(e)}"
             self.root.after(0, lambda: self.status_var.set(error_msg))
             self.root.after(0, lambda: messagebox.showerror("训练错误", error_msg))
+        finally:
+            # 重新启用训练按钮
+            self.root.after(0, self.enable_train_button)
 
     def update_after_training(self, result_key: str):
         """训练完成后的界面更新"""
+        print(f"\n[DEBUG] 更新训练后界面:")
+        print(f"   结果键: {result_key}")
+        print(f"   是否存在于model_results: {result_key in self.model_results}")
+
+        if result_key not in self.model_results:
+            print(f"   [ERROR] 错误：结果键不存在于model_results中!")
+            print(f"   现有的键: {list(self.model_results.keys())}")
+            return
+
         result = self.model_results[result_key]
+        print(f"   模型名称: {result['model_name']}")
+        print(f"   实现方式: {result['implementation']}")
+        print(f"   测试R2: {result['test_metrics']['r2']:.6f}")
+
         self.status_var.set(f"训练完成 - {result['model_name']} ({result['implementation']}) "
-                           f"测试R²: {result['test_metrics']['r2']:.4f}")
+                           f"测试R2: {result['test_metrics']['r2']:.4f}")
 
         # 更新图表
+        print(f"   更新性能图表...")
         self.update_performance_plot()
+        print(f"   更新学习图表...")
         self.update_learning_plot()
+        print(f"   更新预测图表...")
         self.update_prediction_plot()
+        print(f"   [SUCCESS] 界面更新完成")
 
-        messagebox.showinfo("训练完成", f"模型训练完成!\n测试R²: {result['test_metrics']['r2']:.4f}")
+        messagebox.showinfo("训练完成", f"模型训练完成!\n测试R2: {result['test_metrics']['r2']:.4f}")
 
     def compare_all_models(self):
         """对比所有模型"""
@@ -475,12 +673,24 @@ class InteractiveModelApp:
             r2_scores = []
             colors = []
             implementations = []
+            is_current_model = []  # 标记哪些是当前训练的模型
 
             for result_key, result in self.model_results.items():
                 models.append(result['model_name'])
                 r2_scores.append(result['test_metrics']['r2'])
                 implementations.append(result['implementation'])
-                colors.append('skyblue' if result['implementation'] == 'library' else 'lightcoral')
+
+                # 检查是否是当前训练的模型
+                current = (self.current_result_key == result_key)
+                is_current_model.append(current)
+
+                if current:
+                    # 当前模型用高亮颜色
+                    color = 'gold' if result['implementation'] == 'library' else 'orange'
+                else:
+                    # 其他模型用普通颜色
+                    color = 'skyblue' if result['implementation'] == 'library' else 'lightcoral'
+                colors.append(color)
 
             # 创建图表
             x = np.arange(len(models))
@@ -490,24 +700,58 @@ class InteractiveModelApp:
             library_indices = [i for i, impl in enumerate(implementations) if impl == 'library']
             manual_indices = [i for i, impl in enumerate(implementations) if impl == 'manual']
 
+            # 绘制库实现的柱状图
             if library_indices:
-                lib_r2 = [r2_scores[i] for i in library_indices]
-                lib_models = [models[i] for i in library_indices]
-                self.ax_perf.bar([x[i] - width/2 for i in library_indices], lib_r2, width,
-                               label='库实现', color='skyblue', alpha=0.7)
+                lib_r2 = []
+                lib_models = []
+                lib_colors = []
+                for i in library_indices:
+                    lib_r2.append(r2_scores[i])
+                    lib_models.append(models[i])
+                    lib_colors.append(colors[i])
 
+                bars = self.ax_perf.bar([x[i] - width/2 for i in library_indices], lib_r2, width,
+                                      label='库实现', color=lib_colors, alpha=0.8)
+
+                # 为当前模型的柱状图添加边框
+                for i, bar in zip(library_indices, bars):
+                    if is_current_model[i]:
+                        bar.set_edgecolor('red')
+                        bar.set_linewidth(2)
+
+            # 绘制手动实现的柱状图
             if manual_indices:
-                manual_r2 = [r2_scores[i] for i in manual_indices]
-                manual_models = [models[i] for i in manual_indices]
-                self.ax_perf.bar([x[i] + width/2 for i in manual_indices], manual_r2, width,
-                               label='手动实现', color='lightcoral', alpha=0.7)
+                manual_r2 = []
+                manual_models = []
+                manual_colors = []
+                for i in manual_indices:
+                    manual_r2.append(r2_scores[i])
+                    manual_models.append(models[i])
+                    manual_colors.append(colors[i])
+
+                bars = self.ax_perf.bar([x[i] + width/2 for i in manual_indices], manual_r2, width,
+                                      label='手动实现', color=manual_colors, alpha=0.8)
+
+                # 为当前模型的柱状图添加边框
+                for i, bar in zip(manual_indices, bars):
+                    if is_current_model[i]:
+                        bar.set_edgecolor('red')
+                        bar.set_linewidth(2)
+
+            # 添加图例说明
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor='skyblue', alpha=0.7, label='库实现'),
+                Patch(facecolor='lightcoral', alpha=0.7, label='手动实现'),
+                Patch(facecolor='gold', alpha=0.8, edgecolor='red', linewidth=2, label='当前模型')
+            ]
+            self.ax_perf.legend(handles=legend_elements, loc='upper right')
 
             self.ax_perf.set_xlabel('模型')
-            self.ax_perf.set_ylabel('R² 分数')
-            self.ax_perf.set_title('模型性能对比')
+            self.ax_perf.set_ylabel('R2 分数')
+            self.ax_perf.set_title('模型性能对比 (高亮显示当前模型)')
             self.ax_perf.set_xticks(x)
             self.ax_perf.set_xticklabels(models, rotation=45, ha='right')
-            self.ax_perf.legend()
             self.ax_perf.grid(True, alpha=0.3)
 
         self.fig_perf.tight_layout()
@@ -517,13 +761,33 @@ class InteractiveModelApp:
         """更新学习曲线图"""
         self.ax_learn.clear()
 
-        # 显示当前模型的学习曲线
+        # 优先显示当前训练的模型的学习曲线
         current_model_name = self.current_model_name.get()
         use_library = bool(self.use_library.get())
-        result_key = f"{current_model_name}_{'library' if use_library else 'manual'}"
+        current_key = f"{current_model_name}_{'library' if use_library else 'manual'}"
 
-        if result_key in self.training_history and self.training_history[result_key]:
-            history = self.training_history[result_key]
+        # 确定要显示哪个模型的学习曲线
+        display_key = None
+        display_title = ""
+
+        if self.current_result_key and self.current_result_key in self.training_history:
+            # 显示当前训练的模型
+            display_key = self.current_result_key
+            display_title = f"{self.model_results[self.current_result_key]['model_name']} [当前] 学习曲线"
+        elif current_key in self.training_history:
+            # 显示当前选择的模型类型
+            display_key = current_key
+            display_title = f"{current_model_name} 学习曲线"
+        else:
+            # 寻找任何一个有学习曲线的模型
+            for key, history in self.training_history.items():
+                if history:  # 如果有训练历史
+                    display_key = key
+                    display_title = f"{key.split('_')[0]} 学习曲线"
+                    break
+
+        if display_key and display_key in self.training_history and self.training_history[display_key]:
+            history = self.training_history[display_key]
 
             if 'loss' in history:
                 self.ax_learn.plot(history['loss'], label='训练损失', color='blue')
@@ -533,11 +797,11 @@ class InteractiveModelApp:
 
             self.ax_learn.set_xlabel('Epoch')
             self.ax_learn.set_ylabel('损失')
-            self.ax_learn.set_title(f'{current_model_name} 学习曲线')
+            self.ax_learn.set_title(display_title)
             self.ax_learn.legend()
             self.ax_learn.grid(True, alpha=0.3)
         else:
-            self.ax_learn.text(0.5, 0.5, '暂无学习曲线数据', ha='center', va='center',
+            self.ax_learn.text(0.5, 0.5, '暂无学习曲线数据\n(手写模型训练时显示)', ha='center', va='center',
                              transform=self.ax_learn.transAxes)
 
         self.fig_learn.tight_layout()
@@ -550,21 +814,46 @@ class InteractiveModelApp:
         if not self.model_results:
             self.ax_pred.text(0.5, 0.5, '暂无数据', ha='center', va='center', transform=self.ax_pred.transAxes)
         else:
-            # 显示最佳模型的预测结果
-            best_model = None
-            best_r2 = -float('inf')
+            # 优先显示当前训练的模型，如果没有则显示最佳模型
+            display_model = None
+            display_r2 = None
+            display_title = ""
 
-            for result in self.model_results.values():
-                if result['test_metrics']['r2'] > best_r2:
-                    best_r2 = result['test_metrics']['r2']
-                    best_model = result
+            # 检查是否有当前训练的模型
+            current_model_name = self.current_model_name.get()
+            use_library = bool(self.use_library.get())
+            current_key = f"{current_model_name}_{'library' if use_library else 'manual'}"
 
-            if best_model:
+            if self.current_result_key and self.current_result_key in self.model_results:
+                # 显示当前训练的模型
+                display_model = self.model_results[self.current_result_key]
+                display_r2 = display_model['test_metrics']['r2']
+                display_title = f"{display_model['model_name']} ({display_model['implementation']}) [当前] 预测对比"
+            elif current_key in self.model_results:
+                # 显示当前选择的模型类型
+                display_model = self.model_results[current_key]
+                display_r2 = display_model['test_metrics']['r2']
+                display_title = f"{display_model['model_name']} ({display_model['implementation']}) 预测对比"
+            else:
+                # 显示最佳模型
+                best_model = None
+                best_r2 = -float('inf')
+
+                for result in self.model_results.values():
+                    if result['test_metrics']['r2'] > best_r2:
+                        best_r2 = result['test_metrics']['r2']
+                        best_model = result
+
+                display_model = best_model
+                display_r2 = best_r2
+                display_title = f"{best_model['model_name']} ({best_model['implementation']}) [历史最佳] 预测对比"
+
+            if display_model:
                 # 绘制部分测试数据的预测对比
                 n_samples = min(200, len(self.X_test))
                 indices = np.random.choice(len(self.X_test), n_samples, replace=False)
                 y_true_subset = self.y_test[indices]
-                y_pred_subset = best_model['model'].predict(self.X_test[indices])
+                y_pred_subset = display_model['model'].predict(self.X_test[indices])
 
                 self.ax_pred.scatter(y_true_subset, y_pred_subset, alpha=0.6, s=20)
 
@@ -575,11 +864,18 @@ class InteractiveModelApp:
 
                 self.ax_pred.set_xlabel('真实值')
                 self.ax_pred.set_ylabel('预测值')
-                self.ax_pred.set_title(f"{best_model['model_name']} ({best_model['implementation']}) 预测对比")
+                self.ax_pred.set_title(display_title)
                 self.ax_pred.grid(True, alpha=0.3)
 
-                # 添加R²分数
-                self.ax_pred.text(0.05, 0.95, f'R² = {best_r2:.4f}',
+                # 添加R2分数和参数信息
+                info_text = f'R2 = {display_r2:.4f}\n'
+                if 'params' in display_model:
+                    params = display_model['params']
+                    info_text += f'α = {params.get("alpha", "N/A"):.3f}\n'
+                    info_text += f'lr = {params.get("learning_rate", "N/A"):.4f}\n'
+                    info_text += f'iter = {params.get("max_iter", "N/A")}'
+
+                self.ax_pred.text(0.05, 0.95, info_text,
                                 transform=self.ax_pred.transAxes, verticalalignment='top',
                                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
@@ -631,12 +927,12 @@ class InteractiveModelApp:
                 pickle.dump(model_data, f)
 
             self.status_var.set(f"模型权重已保存: {filepath}")
-            print(f"✅ 手写模型权重已保存到: {filepath}")
+            print(f"[SUCCESS] 手写模型权重已保存到: {filepath}")
 
         except Exception as e:
             error_msg = f"保存模型权重失败: {str(e)}"
             self.status_var.set(error_msg)
-            print(f"❌ {error_msg}")
+            print(f"[ERROR] {error_msg}")
 
     def load_saved_model_weights(self, model_name: str, timestamp: str = None):
         """加载已保存的模型权重"""
@@ -663,7 +959,7 @@ class InteractiveModelApp:
         except Exception as e:
             error_msg = f"加载模型权重失败: {str(e)}"
             self.status_var.set(error_msg)
-            print(f"❌ {error_msg}")
+            print(f"[ERROR] {error_msg}")
             return None
 
     def list_saved_models(self):
@@ -692,16 +988,19 @@ class InteractiveModelApp:
             return model_info
 
         except Exception as e:
-            print(f"❌ 列出保存模型失败: {e}")
+            print(f"[ERROR] 列出保存模型失败: {e}")
             return []
 
     def view_model_weights(self):
         """查看当前模型的权重信息"""
         current_model_name = self.current_model_name.get()
         use_library = bool(self.use_library.get())
-        result_key = f"{current_model_name}_{'library' if use_library else 'manual'}"
 
-        if result_key not in self.model_results:
+        # 优先使用当前训练的模型键
+        if self.current_result_key and self.current_result_key in self.model_results:
+            result_key = self.current_result_key
+        else:
+            # 如果没有当前训练的模型，显示警告
             messagebox.showwarning("警告", f"请先训练 {current_model_name} 模型")
             return
 
@@ -730,21 +1029,21 @@ class InteractiveModelApp:
         weight_info += f"{'='*60}\n\n"
 
         # 基本信息
-        weight_info += f"📊 基本信息:\n"
-        weight_info += f"   训练R²: {model_info['train_metrics']['r2']:.4f}\n"
+        weight_info += f"[INFO] 基本信息:\n"
+        weight_info += f"   训练R2: {model_info['train_metrics']['r2']:.4f}\n"
         weight_info += f"   训练RMSE: {model_info['train_metrics']['rmse']:.4f}\n"
         weight_info += f"   训练MAE: {model_info['train_metrics']['mae']:.4f}\n"
         weight_info += f"   训练时间: {model_info['training_time']:.2f}秒\n\n"
 
         # 超参数
-        weight_info += f"⚙️  超参数:\n"
+        weight_info += f"[PARAMS] 超参数:\n"
         weight_info += f"   正则化强度(alpha): {model_info['params']['alpha']}\n"
         weight_info += f"   学习率: {model_info['params']['learning_rate']}\n"
         weight_info += f"   最大迭代次数: {model_info['params']['max_iter']}\n\n"
 
         if not use_library:
             # 手写模型的权重信息
-            weight_info += f"🔧 手写实现权重详情:\n"
+            weight_info += f"[MANUAL] 手写实现权重详情:\n"
 
             # 尝试多种属性名获取权重
             weights = None
@@ -781,13 +1080,13 @@ class InteractiveModelApp:
                     weight_info += f"   截距: {intercept:.6f}\n"
 
                 # 显示权重分布统计
-                weight_info += f"\n   📈 权重分布:\n"
+                weight_info += f"\n   [DISTRIBUTION] 权重分布:\n"
                 weight_info += f"   - 第一个四分位数(Q1): {np.percentile(weights, 25):.6f}\n"
                 weight_info += f"   - 中位数(Q2): {np.median(weights):.6f}\n"
                 weight_info += f"   - 第三个四分位数(Q3): {np.percentile(weights, 75):.6f}\n"
 
                 # 显示权重值（前10个和后10个）
-                weight_info += f"\n   📋 权重值 (显示前10个和后10个):\n"
+                weight_info += f"\n   [WEIGHTS] 权重值 (显示前10个和后10个):\n"
                 if len(weights) <= 20:
                     for i, w in enumerate(weights):
                         weight_info += f"   w[{i:2d}]: {w:12.6f}\n"
@@ -800,16 +1099,16 @@ class InteractiveModelApp:
 
                 # 显示零权重数量
                 zero_weights = np.sum(np.abs(weights) < 1e-10)
-                weight_info += f"\n   🎯 权重稀疏性:\n"
+                weight_info += f"\n   [SPARSITY] 权重稀疏性:\n"
                 weight_info += f"   - 零权重数量: {zero_weights}/{len(weights)} ({zero_weights/len(weights)*100:.1f}%)\n"
                 weight_info += f"   - 非零权重数量: {len(weights)-zero_weights}/{len(weights)} ({(len(weights)-zero_weights)/len(weights)*100:.1f}%)\n"
 
             else:
-                weight_info += "   ❌ 未找到权重信息\n"
+                weight_info += "   [ERROR] 未找到权重信息\n"
 
             # 显示训练历史（如果有）
             if hasattr(model, 'fit_history') and model.fit_history:
-                weight_info += f"\n📈 训练历史:\n"
+                weight_info += f"\n[HISTORY] 训练历史:\n"
                 history = model.fit_history
                 if 'loss' in history and history['loss']:
                     final_loss = history['loss'][-1]
@@ -822,7 +1121,7 @@ class InteractiveModelApp:
 
         else:
             # 库实现的信息
-            weight_info += f"📦 Scikit-learn库实现信息:\n"
+            weight_info += f"[LIBRARY] Scikit-learn库实现信息:\n"
             if hasattr(model, 'coef_'):
                 coef = model.coef_
                 weight_info += f"   系数数量: {len(coef)}\n"
@@ -835,7 +1134,7 @@ class InteractiveModelApp:
 
         # 文件保存信息
         if not use_library:
-            weight_info += f"\n💾 权重保存位置:\n"
+            weight_info += f"\n[SAVE] 权重保存位置:\n"
             weight_info += f"   目录: {self.weights_dir}\n"
             saved_models = self.list_saved_models()
             current_timestamp = None

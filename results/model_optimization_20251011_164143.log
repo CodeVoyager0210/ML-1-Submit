@@ -1,0 +1,4 @@
+2025-10-11 16:41:43,223 - __main__ - INFO - 日志文件: results\model_optimization_20251011_164143.log
+2025-10-11 16:41:43,223 - __main__ - INFO - 阶段五：模型优化开始
+2025-10-11 16:41:43,223 - __main__ - INFO - 参数: k_fold=5, use_library=False, manual_only=False, interactive=True
+2025-10-11 16:41:43,224 - __main__ - INFO - 启动交互式可视化界面...
